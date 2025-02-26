@@ -518,7 +518,7 @@ def create_gradio_interface():
         
         with gr.Row():
             with gr.Column(scale=2):
-                with gr.Group():  # Changed from Box to Group
+                with gr.Group():
                     gr.Markdown("### Login Details")
                     
                     # Login fields
@@ -538,23 +538,13 @@ def create_gradio_interface():
                         stop_btn = gr.Button("Stop Download", variant="stop")
                     
                     status_text = gr.Textbox(label="Status", value="Ready")
-                    
-                    def toggle_password_visibility(anonymous_checked):
-                        return [
-                            gr.update(visible=not anonymous_checked),  # password
-                            gr.update(visible=not anonymous_checked)   # username
-                        ]
-                    
-                    anonymous.change(
-                        fn=toggle_password_visibility, 
-                        inputs=anonymous,
-                        outputs=[password, username]
-                    )
             
             with gr.Column(scale=3):
-                with gr.Group():  # Changed from Box to Group
+                with gr.Group():
                     gr.Markdown("### Download Progress")
-                    progress_bar = gr.Progress(label="Download Progress")
+                    # Changed progress bar implementation
+                    gr.Markdown("Progress:")
+                    progress_bar = gr.Progress()
                     
                     with gr.Row():
                         elapsed_time = gr.Textbox(label="Elapsed Time", value="00:00:00")
@@ -564,37 +554,39 @@ def create_gradio_interface():
                         downloaded_size = gr.Textbox(label="Downloaded", value="0 MB")
                         total_size = gr.Textbox(label="Total Size", value="Unknown")
                 
-                with gr.Group():  # Changed from Box to Group
+                with gr.Group():
                     gr.Markdown("### Public Links (Available after download completes)")
                     links_output = gr.JSON(label="Available Files")
         
         # Event handlers
-        def start_download_handler(username, password, game_input, anonymous):
-            if not game_input:
-                return "Please enter a game ID or Steam URL", None
-            
-            if not anonymous and (not username or not password):
-                return "Please enter your Steam credentials or select anonymous login", None
-            
-            message, error = downloader.start_download(username, password, game_input, anonymous)
-            return message, error
+        def toggle_password_visibility(anonymous_checked):
+            return [
+                gr.update(visible=not anonymous_checked),  # password
+                gr.update(visible=not anonymous_checked)   # username
+            ]
         
+        anonymous.change(
+            fn=toggle_password_visibility,
+            inputs=anonymous,
+            outputs=[password, username]
+        )
+        
+        # Download button click handler
         download_btn.click(
-            fn=start_download_handler,
+            fn=downloader.start_download,
             inputs=[username, password, game_input, anonymous],
             outputs=[status_text, gr.Textbox(visible=False)]
         )
         
+        # Stop button click handler
         stop_btn.click(
             fn=downloader.stop_download,
             outputs=[status_text, gr.Textbox(visible=False)]
         )
         
-        # Status updater
+        # Status update function
         def update_status():
             status = downloader.get_download_status()
-            
-            # Update progress bar
             progress_value = status["progress"] / 100
             
             return {
