@@ -33,17 +33,15 @@ RUN mkdir -p /app/downloads /app/public /app/logs
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
-ENV GRADIO_SERVER_NAME=0.0.0.0
-ENV GRADIO_SERVER_PORT=7860
 ENV PATH="/app/steamcmd:${PATH}"
 ENV LD_LIBRARY_PATH="/app/steamcmd/linux32:${LD_LIBRARY_PATH}"
 
-# Expose the port that Gradio uses
-EXPOSE 7860
+# Expose the port (Railway will override this)
+EXPOSE ${PORT}
 
 # Add healthcheck
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:7860/ || exit 1
+    CMD curl -f http://localhost:${PORT}/ || exit 1
 
 # Run the application
 CMD ["python", "main.py"]
