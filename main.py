@@ -12,10 +12,7 @@ import json
 import requests
 from dotenv import load_dotenv
 import gradio as gr
-from flask import Flask
 from prometheus_client import Counter, Gauge, start_http_server
-import shutil
-import urllib.parse
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.wsgi import WSGIMiddleware
