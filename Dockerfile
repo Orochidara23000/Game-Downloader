@@ -1,12 +1,22 @@
 # Dockerfile
 FROM python:3.9.18-slim
 
-# Install system dependencies for SteamCMD
-RUN apt-get update && apt-get install -y \
+# Install system dependencies and SteamCMD
+RUN dpkg --add-architecture i386 && \
+    apt-get update && apt-get install -y \
     lib32gcc-s1 \
-    steamcmd \
+    lib32stdc++6 \
+    libc6-i386 \
+    libstdc++6:i386 \
     curl \
-    && rm -rf /var/lib/apt/lists/*
+    wget \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /app/steamcmd \
+    && cd /app/steamcmd \
+    && wget https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz \
+    && tar -xvzf steamcmd_linux.tar.gz \
+    && rm steamcmd_linux.tar.gz \
+    && ./steamcmd.sh +quit
 
 # Set working directory
 WORKDIR /app
@@ -25,6 +35,8 @@ RUN mkdir -p /app/downloads /app/public /app/logs
 ENV PYTHONUNBUFFERED=1
 ENV GRADIO_SERVER_NAME=0.0.0.0
 ENV GRADIO_SERVER_PORT=7860
+ENV PATH="/app/steamcmd:${PATH}"
+ENV LD_LIBRARY_PATH="/app/steamcmd/linux32:${LD_LIBRARY_PATH}"
 
 # Expose the port that Gradio uses
 EXPOSE 7860
