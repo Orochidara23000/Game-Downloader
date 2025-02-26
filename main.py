@@ -547,9 +547,8 @@ def create_gradio_interface():
             with gr.Column(scale=3):
                 with gr.Group():
                     gr.Markdown("### Download Progress")
-                    # Changed progress bar implementation
-                    gr.Markdown("Progress:")
-                    progress_bar = gr.Progress()
+                    # Progress display
+                    progress_text = gr.Textbox(label="Progress", value="0%")
                     
                     with gr.Row():
                         elapsed_time = gr.Textbox(label="Elapsed Time", value="00:00:00")
@@ -592,23 +591,29 @@ def create_gradio_interface():
         # Status update function
         def update_status():
             status = downloader.get_download_status()
-            progress_value = status["progress"] / 100
-            
-            return {
-                progress_bar: progress_value,
-                elapsed_time: status["elapsed_time"],
-                remaining_time: status["remaining_time"],
-                downloaded_size: status["downloaded_size"],
-                total_size: status["total_size"],
-                status_text: f"Status: {status['status']}" + (f" - {status['error']}" if status["error"] else ""),
-                links_output: status["links"]
-            }
+            return [
+                f"{status['progress']:.1f}%",
+                status["elapsed_time"],
+                status["remaining_time"],
+                status["downloaded_size"],
+                status["total_size"],
+                f"Status: {status['status']}" + (f" - {status['error']}" if status["error"] else ""),
+                status["links"]
+            ]
         
         # Update status every second
         app.load(lambda: None, inputs=None, outputs=None, every=1, show_progress=False).then(
             update_status,
             inputs=None,
-            outputs=[progress_bar, elapsed_time, remaining_time, downloaded_size, total_size, status_text, links_output]
+            outputs=[
+                progress_text,
+                elapsed_time,
+                remaining_time,
+                downloaded_size,
+                total_size,
+                status_text,
+                links_output
+            ]
         )
     
     return app
