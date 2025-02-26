@@ -12,6 +12,7 @@ import json
 import requests
 from dotenv import load_dotenv
 import gradio as gr
+from flask import Flask
 from prometheus_client import Counter, Gauge, start_http_server
 import shutil
 import urllib.parse
@@ -40,6 +41,28 @@ ACTIVE_DOWNLOADS = Gauge('steam_active_downloads', 'Number of active downloads')
 PORT = int(os.getenv('PORT', '8080'))
 PUBLIC_URL = os.getenv('PUBLIC_URL', '')
 RAILWAY_STATIC_URL = os.getenv('RAILWAY_STATIC_URL', '')
+
+# Create Flask app
+flask_app = Flask(__name__)
+
+@flask_app.route('/health')
+def health_check():
+    """Health check endpoint"""
+    try:
+        # Check if SteamCMD is available
+        steamcmd_path = "/app/steamcmd/steamcmd.sh"
+        if not os.path.exists(steamcmd_path):
+            return {"status": "unhealthy", "reason": "SteamCMD not found"}, 503
+        
+        # Check if required directories exist
+        required_dirs = ["/app/downloads", "/app/public", "/app/logs"]
+        for directory in required_dirs:
+            if not os.path.exists(directory):
+                return {"status": "unhealthy", "reason": f"Required directory missing: {directory}"}, 503
+        
+        return {"status": "healthy"}, 200
+    except Exception as e:
+        return {"status": "unhealthy", "reason": str(e)}, 503
 
 class SteamDownloader:
     def __init__(self):
@@ -519,17 +542,6 @@ class SteamDownloader:
                 return None, f"Error stopping download: {str(e)}"
         return "No active download to stop", None
 
-def create_health_endpoint():
-    """Create a simple health check endpoint"""
-    from flask import Flask
-    app = Flask(__name__)
-    
-    @app.route('/health')
-    def health_check():
-        return {"status": "healthy"}, 200
-    
-    return app
-
 def create_gradio_interface():
     downloader = SteamDownloader()
     
@@ -659,21 +671,19 @@ def main():
     # Create and configure the Gradio interface
     app = create_gradio_interface()
     
-    # Create health check endpoint
-    health_app = create_health_endpoint()
-    
     # Log startup information
     logger.info(f"Starting server on port {PORT}")
     logger.info(f"Public URL: {PUBLIC_URL}")
     logger.info(f"Railway Static URL: {RAILWAY_STATIC_URL}")
     
-    # Launch the application
+    # Launch the application with custom server
     app.launch(
         server_name="0.0.0.0",
         server_port=PORT,
         share=False,
         favicon_path="./assets/favicon.ico" if os.path.exists("./assets/favicon.ico") else None,
-        auth=None if os.getenv('ENABLE_AUTHENTICATION', 'false').lower() != 'true' else None
+        auth=None if os.getenv('ENABLE_AUTHENTICATION', 'false').lower() != 'true' else None,
+        server_app=flask_app  # Use Flask app as the server
     )
 
 if __name__ == "__main__":
