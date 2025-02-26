@@ -673,7 +673,6 @@ def main():
         server_port=PORT,
         share=False,
         favicon_path="./assets/favicon.ico" if os.path.exists("./assets/favicon.ico") else None,
-        mount_gradio_app=True,
         auth=None if os.getenv('ENABLE_AUTHENTICATION', 'false').lower() != 'true' else None
     )
 
