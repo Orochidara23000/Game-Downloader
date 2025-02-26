@@ -1,4 +1,4 @@
-# Dockerfile
+# Use a more specific Python version for better reproducibility
 FROM python:3.9.18-slim
 
 # Install system dependencies and SteamCMD
@@ -35,7 +35,7 @@ RUN mkdir -p /app/downloads /app/public /app/logs
 ENV PYTHONUNBUFFERED=1
 ENV PATH="/app/steamcmd:${PATH}"
 ENV LD_LIBRARY_PATH="/app/steamcmd/linux32:${LD_LIBRARY_PATH}"
-ENV PORT=8080  # Set default port
+ENV PORT="8080"
 
 # Expose the port (Railway will override this)
 EXPOSE ${PORT}
@@ -44,5 +44,7 @@ EXPOSE ${PORT}
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:${PORT}/ || exit 1
 
-# Run the application
-CMD ["python", "main.py"]
+# Make start script executable and run it
+COPY start.sh .
+RUN chmod +x start.sh
+CMD ["./start.sh"]
