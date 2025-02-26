@@ -16,6 +16,9 @@ from flask import Flask
 from prometheus_client import Counter, Gauge, start_http_server
 import shutil
 import urllib.parse
+import uvicorn
+from fastapi import FastAPI
+from fastapi.middleware.wsgi import WSGIMiddleware
 
 # Load environment variables
 load_dotenv()
@@ -42,11 +45,11 @@ PORT = int(os.getenv('PORT', '8080'))
 PUBLIC_URL = os.getenv('PUBLIC_URL', '')
 RAILWAY_STATIC_URL = os.getenv('RAILWAY_STATIC_URL', '')
 
-# Create Flask app
-flask_app = Flask(__name__)
+# Create FastAPI app
+app = FastAPI()
 
-@flask_app.route('/health')
-def health_check():
+@app.get("/health")
+async def health_check():
     """Health check endpoint"""
     try:
         # Check if SteamCMD is available
@@ -60,7 +63,7 @@ def health_check():
             if not os.path.exists(directory):
                 return {"status": "unhealthy", "reason": f"Required directory missing: {directory}"}, 503
         
-        return {"status": "healthy"}, 200
+        return {"status": "healthy"}
     except Exception as e:
         return {"status": "unhealthy", "reason": str(e)}, 503
 
@@ -669,22 +672,18 @@ def create_gradio_interface():
 
 def main():
     # Create and configure the Gradio interface
-    app = create_gradio_interface()
+    gradio_app = create_gradio_interface()
     
     # Log startup information
     logger.info(f"Starting server on port {PORT}")
     logger.info(f"Public URL: {PUBLIC_URL}")
     logger.info(f"Railway Static URL: {RAILWAY_STATIC_URL}")
     
-    # Launch the application with custom server
-    app.launch(
-        server_name="0.0.0.0",
-        server_port=PORT,
-        share=False,
-        favicon_path="./assets/favicon.ico" if os.path.exists("./assets/favicon.ico") else None,
-        auth=None if os.getenv('ENABLE_AUTHENTICATION', 'false').lower() != 'true' else None,
-        server_app=flask_app  # Use Flask app as the server
-    )
+    # Mount Gradio app to FastAPI
+    app.mount("/", WSGIMiddleware(gradio_app.server.app))
+    
+    # Start the server
+    uvicorn.run(app, host="0.0.0.0", port=PORT)
 
 if __name__ == "__main__":
     main()
