@@ -25,10 +25,17 @@ logger = logging.getLogger("SteamDownloader")
 
 class SteamDownloader:
     def __init__(self):
-        self.steamcmd_path = os.path.join(os.getcwd(), "steamcmd")
-        self.downloads_dir = os.path.join(os.getcwd(), "downloads")
-        self.public_dir = os.path.join(os.getcwd(), "public")
-        self.steamcmd_exe = os.path.join(self.steamcmd_path, "steamcmd.exe" if sys.platform == "win32" else "steamcmd.sh")
+        """Initialize the SteamDownloader with correct paths"""
+        self.steamcmd_path = "/app/steamcmd"  # Base path for steamcmd
+        self.downloads_dir = "/app/downloads"
+        self.public_dir = "/app/public"
+        
+        # Use the correct path for steamcmd executable
+        if sys.platform == "win32":
+            self.steamcmd_exe = os.path.join(self.steamcmd_path, "steamcmd.exe")
+        else:
+            self.steamcmd_exe = os.path.join(self.steamcmd_path, "steamcmd.sh")
+        
         self.current_process = None
         self.download_status = {
             "game_id": None,
@@ -86,50 +93,136 @@ class SteamDownloader:
                 return False, error_msg
             
             # Look for version information in output
-            if result.returncode == 0:
-                logger.info("SteamCMD is properly installed")
-                return True
-            else:
-                logger.error(f"SteamCMD test failed with return code: {result.returncode}")
-                return False
-        except (subprocess.SubprocessError, OSError) as e:
-            logger.error(f"Error running SteamCMD: {str(e)}")
-            return False
+            if "Steam Console Client" not in result.stdout:
+                error_msg = "SteamCMD seems to be installed but not responding correctly"
+                logger.error(error_msg)
+                return False, error_msg
+            
+            # Try to update SteamCMD itself
+            logger.info("Updating SteamCMD...")
+            update_cmd = [self.steamcmd_exe, "+login", "anonymous", "+app_update", "steamcmd", "+quit"]
+            update_result = subprocess.run(
+                update_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=60
+            )
+            
+            if update_result.returncode != 0:
+                error_msg = f"Failed to update SteamCMD: {update_result.stderr}"
+                logger.warning(error_msg)
+                # Don't return False here as this is not critical
+            
+            # Verify required directories exist
+            required_dirs = [
+                os.path.dirname(self.steamcmd_exe),
+                self.downloads_dir,
+                self.public_dir
+            ]
+            
+            for directory in required_dirs:
+                if not os.path.exists(directory):
+                    try:
+                        os.makedirs(directory, exist_ok=True)
+                        logger.info(f"Created missing directory: {directory}")
+                    except Exception as e:
+                        error_msg = f"Failed to create required directory {directory}: {str(e)}"
+                        logger.error(error_msg)
+                        return False, error_msg
+            
+            logger.info("SteamCMD verification completed successfully")
+            return True, "SteamCMD is properly installed and functioning"
+            
+        except subprocess.TimeoutExpired:
+            error_msg = "SteamCMD verification timed out"
+            logger.error(error_msg)
+            return False, error_msg
+        except Exception as e:
+            error_msg = f"Error during SteamCMD verification: {str(e)}"
+            logger.error(error_msg)
+            return False, error_msg
     
     def install_steamcmd(self):
         """
-        Provides instructions for installing SteamCMD
+        Attempts to install or repair SteamCMD installation
+        Returns: (bool, str) - (success, message)
         """
-        if sys.platform == "win32":
-            return """
-            Please install SteamCMD manually by following these steps:
-            1. Download SteamCMD from https://steamcdn-a.akamaihd.net/client/installer/steamcmd.zip
-            2. Extract the zip file to the 'steamcmd' folder in this application's directory
-            3. Run steamcmd.exe once to complete installation
-            4. Restart this application after installation
-            """
-        else:  # Linux/macOS
-            return """
-            Please install SteamCMD by following these steps:
+        logger.info("Attempting to install/repair SteamCMD...")
+        
+        try:
+            # Create steamcmd directory if it doesn't exist
+            os.makedirs(self.steamcmd_path, exist_ok=True)
             
-            For Debian/Ubuntu:
-            $ sudo apt-get install steamcmd
+            if sys.platform == "win32":
+                # Windows installation
+                url = "https://steamcdn-a.akamaihd.net/client/installer/steamcmd.zip"
+                zip_path = os.path.join(self.steamcmd_path, "steamcmd.zip")
+                
+                # Download SteamCMD
+                logger.info("Downloading SteamCMD for Windows...")
+                response = requests.get(url, stream=True)
+                response.raise_for_status()
+                
+                with open(zip_path, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        f.write(chunk)
+                
+                # Extract ZIP
+                logger.info("Extracting SteamCMD...")
+                import zipfile
+                with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                    zip_ref.extractall(self.steamcmd_path)
+                
+                # Clean up
+                os.remove(zip_path)
+                
+            else:
+                # Linux/macOS installation
+                url = "https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz"
+                tar_path = os.path.join(self.steamcmd_path, "steamcmd_linux.tar.gz")
+                
+                # Download SteamCMD
+                logger.info("Downloading SteamCMD for Linux...")
+                response = requests.get(url, stream=True)
+                response.raise_for_status()
+                
+                with open(tar_path, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        f.write(chunk)
+                
+                # Extract TAR
+                logger.info("Extracting SteamCMD...")
+                import tarfile
+                with tarfile.open(tar_path, 'r:gz') as tar:
+                    tar.extractall(self.steamcmd_path)
+                
+                # Set executable permissions
+                os.chmod(self.steamcmd_exe, 0o755)
+                
+                # Clean up
+                os.remove(tar_path)
             
-            For Arch Linux:
-            $ sudo pacman -S steamcmd
+            # Initial run to complete installation
+            logger.info("Running initial SteamCMD setup...")
+            subprocess.run(
+                [self.steamcmd_exe, "+quit"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=30
+            )
             
-            For macOS:
-            $ brew install steamcmd
+            # Verify installation
+            success, message = self.check_steamcmd_installation()
+            if success:
+                return True, "SteamCMD installed successfully"
+            else:
+                return False, f"SteamCMD installation completed but verification failed: {message}"
             
-            Alternatively, download and install manually:
-            $ mkdir -p steamcmd
-            $ cd steamcmd
-            $ curl -O https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz
-            $ tar -xvzf steamcmd_linux.tar.gz
-            $ ./steamcmd.sh +quit
-            
-            Restart this application after installation
-            """
+        except Exception as e:
+            error_msg = f"Failed to install SteamCMD: {str(e)}"
+            logger.error(error_msg)
+            return False, error_msg
     
     def extract_game_id(self, input_text):
         """
@@ -399,27 +492,24 @@ def create_gradio_interface():
     downloader = SteamDownloader()
     
     # Check SteamCMD on startup
-    steamcmd_installed = downloader.check_steamcmd_installation()
+    steamcmd_installed, message = downloader.check_steamcmd_installation()
     
     if not steamcmd_installed:
-        # If SteamCMD not found, create an installation instructions interface
-        install_message = downloader.install_steamcmd()
-        
-        with gr.Blocks(title="SteamCMD Installation Required") as app:
-            gr.Markdown("# ⚠️ SteamCMD Installation Required")
-            gr.Markdown(install_message)
-            gr.Markdown("Click the button below after installing SteamCMD to refresh")
-            refresh_btn = gr.Button("Refresh")
-            
-            def refresh():
-                if downloader.check_steamcmd_installation():
-                    return "SteamCMD installed successfully! Please restart the application."
-                else:
-                    return "SteamCMD still not detected. Please complete the installation."
-            
-            refresh_btn.click(fn=refresh, outputs=gr.Textbox(label="Status"))
-        
-        return app
+        # If SteamCMD not found, attempt to install it
+        success, install_message = downloader.install_steamcmd()
+        if not success:
+            with gr.Blocks(title="SteamCMD Installation Required") as app:
+                gr.Markdown("# ⚠️ SteamCMD Installation Required")
+                gr.Markdown(install_message)
+                gr.Markdown("Click the button below to retry installation")
+                retry_btn = gr.Button("Retry Installation")
+                
+                def retry_installation():
+                    success, msg = downloader.install_steamcmd()
+                    return "Success! Please restart the application." if success else f"Installation failed: {msg}"
+                
+                retry_btn.click(fn=retry_installation, outputs=gr.Textbox(label="Status"))
+            return app
     
     # Main application interface
     with gr.Blocks(title="Steam Game Downloader") as app:
@@ -428,13 +518,13 @@ def create_gradio_interface():
         
         with gr.Row():
             with gr.Column(scale=2):
-                with gr.Box():
+                with gr.Group():  # Changed from Box to Group
                     gr.Markdown("### Login Details")
                     
                     # Login fields
                     username = gr.Textbox(label="Steam Username", placeholder="Your Steam username")
                     password = gr.Textbox(label="Password", placeholder="Your Steam password", 
-                                         type="password", visible=True)
+                                       type="password", visible=True)
                     anonymous = gr.Checkbox(label="Login Anonymously (for free games only)")
                     
                     # Game input fields
@@ -462,7 +552,7 @@ def create_gradio_interface():
                     )
             
             with gr.Column(scale=3):
-                with gr.Box():
+                with gr.Group():  # Changed from Box to Group
                     gr.Markdown("### Download Progress")
                     progress_bar = gr.Progress(label="Download Progress")
                     
@@ -474,7 +564,7 @@ def create_gradio_interface():
                         downloaded_size = gr.Textbox(label="Downloaded", value="0 MB")
                         total_size = gr.Textbox(label="Total Size", value="Unknown")
                 
-                with gr.Box():
+                with gr.Group():  # Changed from Box to Group
                     gr.Markdown("### Public Links (Available after download completes)")
                     links_output = gr.JSON(label="Available Files")
         
