@@ -12,6 +12,11 @@ import requests
 from datetime import datetime
 from pathlib import Path
 
+# Get port from Railway environment variable
+PORT = int(os.getenv('PORT', 7860))
+PUBLIC_URL = os.getenv('PUBLIC_URL', '')
+RAILWAY_STATIC_URL = os.getenv('RAILWAY_STATIC_URL', '')
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -611,4 +616,9 @@ def create_gradio_interface():
 # Launch the application
 if __name__ == "__main__":
     app = create_gradio_interface()
-    app.launch(server_name="0.0.0.0", share=True)
+    app.launch(
+        server_name="0.0.0.0",
+        server_port=PORT,
+        share=False,
+        favicon_path="./assets/favicon.ico"  # Optional: Add a favicon
+    )
