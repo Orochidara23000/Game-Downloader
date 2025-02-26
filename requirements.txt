@@ -1,3 +1,7 @@
 # requirements.txt
 gradio>=3.0
 requests>=2.25.0
+python-dotenv>=1.0.0
+
+# Optional: for better logging and monitoring
+prometheus-client>=0.17.0
