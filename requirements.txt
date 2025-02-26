@@ -2,6 +2,11 @@
 gradio>=3.0
 requests>=2.25.0
 python-dotenv>=1.0.0
+flask>=2.0.0
 
 # Optional: for better logging and monitoring
 prometheus-client>=0.17.0
+
+# Testing and validation
+pytest>=7.4.0
+validators>=0.20.0
