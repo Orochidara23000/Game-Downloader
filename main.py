@@ -11,9 +11,13 @@ import urllib.parse
 import requests
 from datetime import datetime
 from pathlib import Path
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Get port from Railway environment variable
-PORT = int(os.getenv('PORT', 7860))
+PORT = int(os.getenv('PORT', '8080'))  # Changed default to 8080 to match Railway's preference
 PUBLIC_URL = os.getenv('PUBLIC_URL', '')
 RAILWAY_STATIC_URL = os.getenv('RAILWAY_STATIC_URL', '')
 
@@ -621,9 +625,13 @@ def create_gradio_interface():
 # Launch the application
 if __name__ == "__main__":
     app = create_gradio_interface()
+    
+    # Log the port being used
+    logger.info(f"Starting server on port {PORT}")
+    
     app.launch(
         server_name="0.0.0.0",
         server_port=PORT,
         share=False,
-        favicon_path="./assets/favicon.ico"  # Optional: Add a favicon
+        favicon_path="./assets/favicon.ico" if os.path.exists("./assets/favicon.ico") else None
     )
