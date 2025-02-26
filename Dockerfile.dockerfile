@@ -35,6 +35,7 @@ RUN mkdir -p /app/downloads /app/public /app/logs
 ENV PYTHONUNBUFFERED=1
 ENV PATH="/app/steamcmd:${PATH}"
 ENV LD_LIBRARY_PATH="/app/steamcmd/linux32:${LD_LIBRARY_PATH}"
+ENV PORT=8080  # Set default port
 
 # Expose the port (Railway will override this)
 EXPOSE ${PORT}
