@@ -42,7 +42,7 @@ EXPOSE ${PORT}
 
 # Add healthcheck
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:${PORT}/ || exit 1
+    CMD python health_check.py || exit 1
 
 # Make start script executable and run it
 COPY start.sh .
