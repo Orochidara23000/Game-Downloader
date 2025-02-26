@@ -5,37 +5,46 @@ import subprocess
 import time
 import threading
 import logging
-import gradio as gr
-import shutil
-import urllib.parse
-import requests
 from datetime import datetime
 from pathlib import Path
+from typing import Dict, Any, Tuple, Optional
+import json
+import requests
 from dotenv import load_dotenv
+import gradio as gr
+from prometheus_client import Counter, Gauge, start_http_server
+import shutil
+import urllib.parse
 
 # Load environment variables
 load_dotenv()
 
-# Get port from Railway environment variable
-PORT = int(os.getenv('PORT', '8080'))  # Changed default to 8080 to match Railway's preference
-PUBLIC_URL = os.getenv('PUBLIC_URL', '')
-RAILWAY_STATIC_URL = os.getenv('RAILWAY_STATIC_URL', '')
-
 # Configure logging
+LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
 logging.basicConfig(
-    level=logging.INFO,
+    level=getattr(logging, LOG_LEVEL),
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler("steam_downloader.log"),
+        logging.FileHandler("logs/steam_downloader.log"),
         logging.StreamHandler()
     ]
 )
 logger = logging.getLogger("SteamDownloader")
 
+# Configure metrics
+DOWNLOAD_COUNTER = Counter('steam_downloads_total', 'Total number of downloads')
+DOWNLOAD_ERRORS = Counter('steam_download_errors_total', 'Total number of download errors')
+ACTIVE_DOWNLOADS = Gauge('steam_active_downloads', 'Number of active downloads')
+
+# Railway configuration
+PORT = int(os.getenv('PORT', '8080'))
+PUBLIC_URL = os.getenv('PUBLIC_URL', '')
+RAILWAY_STATIC_URL = os.getenv('RAILWAY_STATIC_URL', '')
+
 class SteamDownloader:
     def __init__(self):
         """Initialize the SteamDownloader with correct paths"""
-        self.steamcmd_path = "/app/steamcmd"  # Base path for steamcmd
+        self.steamcmd_path = "/app/steamcmd"
         self.downloads_dir = "/app/downloads"
         self.public_dir = "/app/public"
         
@@ -46,7 +55,19 @@ class SteamDownloader:
             self.steamcmd_exe = os.path.join(self.steamcmd_path, "steamcmd.sh")
         
         self.current_process = None
-        self.download_status = {
+        self.download_status = self._create_initial_status()
+        
+        # Create necessary directories
+        self._ensure_directories()
+        
+        # Start metrics server if enabled
+        if os.getenv('ENABLE_METRICS', 'false').lower() == 'true':
+            metrics_port = int(os.getenv('METRICS_PORT', '9090'))
+            start_http_server(metrics_port)
+    
+    def _create_initial_status(self) -> Dict[str, Any]:
+        """Create initial download status dictionary"""
+        return {
             "game_id": None,
             "progress": 0,
             "start_time": None,
@@ -56,10 +77,12 @@ class SteamDownloader:
             "status": "Idle",
             "error": None
         }
-        
-        # Create necessary directories
-        for directory in [self.steamcmd_path, self.downloads_dir, self.public_dir]:
+    
+    def _ensure_directories(self) -> None:
+        """Ensure all required directories exist"""
+        for directory in [self.steamcmd_path, self.downloads_dir, self.public_dir, "logs"]:
             os.makedirs(directory, exist_ok=True)
+            logger.debug(f"Ensured directory exists: {directory}")
     
     def check_steamcmd_installation(self):
         """
@@ -496,7 +519,17 @@ class SteamDownloader:
                 return None, f"Error stopping download: {str(e)}"
         return "No active download to stop", None
 
-# Main application
+def create_health_endpoint():
+    """Create a simple health check endpoint"""
+    from flask import Flask
+    app = Flask(__name__)
+    
+    @app.route('/health')
+    def health_check():
+        return {"status": "healthy"}, 200
+    
+    return app
+
 def create_gradio_interface():
     downloader = SteamDownloader()
     
@@ -622,16 +655,27 @@ def create_gradio_interface():
     
     return app
 
-# Launch the application
-if __name__ == "__main__":
+def main():
+    # Create and configure the Gradio interface
     app = create_gradio_interface()
     
-    # Log the port being used
-    logger.info(f"Starting server on port {PORT}")
+    # Create health check endpoint
+    health_app = create_health_endpoint()
     
+    # Log startup information
+    logger.info(f"Starting server on port {PORT}")
+    logger.info(f"Public URL: {PUBLIC_URL}")
+    logger.info(f"Railway Static URL: {RAILWAY_STATIC_URL}")
+    
+    # Launch the application
     app.launch(
         server_name="0.0.0.0",
         server_port=PORT,
         share=False,
-        favicon_path="./assets/favicon.ico" if os.path.exists("./assets/favicon.ico") else None
+        favicon_path="./assets/favicon.ico" if os.path.exists("./assets/favicon.ico") else None,
+        mount_gradio_app=True,
+        auth=None if os.getenv('ENABLE_AUTHENTICATION', 'false').lower() != 'true' else None
     )
+
+if __name__ == "__main__":
+    main()
