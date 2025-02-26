@@ -15,7 +15,6 @@ import gradio as gr
 from prometheus_client import Counter, Gauge, start_http_server
 import uvicorn
 from fastapi import FastAPI
-from fastapi.middleware.wsgi import WSGIMiddleware
 
 # Load environment variables
 load_dotenv()
@@ -676,8 +675,16 @@ def main():
     logger.info(f"Public URL: {PUBLIC_URL}")
     logger.info(f"Railway Static URL: {RAILWAY_STATIC_URL}")
     
-    # Mount Gradio app to FastAPI
-    app.mount("/", WSGIMiddleware(gradio_app.server.app))
+    # Create FastAPI app with Gradio
+    app = FastAPI()
+    
+    # Add health check endpoint
+    @app.get("/health")
+    async def health():
+        return {"status": "healthy"}
+    
+    # Mount Gradio app
+    app = gr.mount_gradio_app(app, gradio_app, path="/")
     
     # Start the server
     uvicorn.run(app, host="0.0.0.0", port=PORT)
