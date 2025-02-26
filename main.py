@@ -47,21 +47,45 @@ class SteamDownloader:
     
     def check_steamcmd_installation(self):
         """
-        Verifies if SteamCMD is installed and accessible
+        Performs a comprehensive verification of SteamCMD installation and functionality
+        Returns: (bool, str) - (is_valid, message)
         """
-        if not os.path.exists(self.steamcmd_exe):
-            logger.warning("SteamCMD not found at expected location")
-            return False
+        logger.info("Verifying SteamCMD installation...")
         
-        # Try running a simple SteamCMD command to check if it works
+        # Check if SteamCMD executable exists
+        if not os.path.exists(self.steamcmd_exe):
+            error_msg = f"SteamCMD executable not found at: {self.steamcmd_exe}"
+            logger.error(error_msg)
+            return False, error_msg
+        
+        # Check if executable has correct permissions
+        if not os.access(self.steamcmd_exe, os.X_OK):
+            try:
+                os.chmod(self.steamcmd_exe, 0o755)
+                logger.info("Fixed SteamCMD executable permissions")
+            except Exception as e:
+                error_msg = f"Cannot set executable permissions for SteamCMD: {str(e)}"
+                logger.error(error_msg)
+                return False, error_msg
+        
+        # Try running SteamCMD with version check
         try:
+            cmd = [self.steamcmd_exe, "+version", "+quit"]
             result = subprocess.run(
-                [self.steamcmd_exe, "+quit"],
+                cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                timeout=10
+                timeout=30
             )
+            
+            # Check return code
+            if result.returncode != 0:
+                error_msg = f"SteamCMD test failed with return code: {result.returncode}\nOutput: {result.stdout}\nError: {result.stderr}"
+                logger.error(error_msg)
+                return False, error_msg
+            
+            # Look for version information in output
             if result.returncode == 0:
                 logger.info("SteamCMD is properly installed")
                 return True
