@@ -8,29 +8,35 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PORT=8080
 
-# Install basic system dependencies
-RUN apt-get update && apt-get install -y \
+# Install system dependencies and SteamCMD
+RUN dpkg --add-architecture i386 && \
+    apt-get update && apt-get install -y \
+    lib32gcc-s1 \
+    lib32stdc++6 \
+    libc6-i386 \
+    libstdc++6:i386 \
     curl \
     wget \
     procps \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /app/steamcmd \
+    && cd /app/steamcmd \
+    && wget https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz \
+    && tar -xvzf steamcmd_linux.tar.gz \
+    && rm steamcmd_linux.tar.gz \
+    && ./steamcmd.sh +quit
 
 # Set working directory
 WORKDIR /app
 
-# Copy installer script and requirements first
-COPY steamcmd_installer.py requirements.txt ./
-
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Run SteamCMD installer
-RUN python steamcmd_installer.py
-
 # Create necessary directories with correct permissions
 RUN mkdir -p /app/downloads /app/public /app/logs /data && \
     chmod -R 755 /app && \
-    chmod -R 755 /data
+    chmod -R 777 /data  # Ensure write permissions for all users
+
+# Copy dependency file and install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the rest of the application code
 COPY . .
@@ -44,7 +50,7 @@ ENV RAILWAY_VOLUME_MOUNT_PATH="/data"
 EXPOSE ${PORT}
 EXPOSE 9090
 
-# Add healthcheck
+# Add healthcheck that waits for Gradio to be ready
 HEALTHCHECK --interval=30s --timeout=30s --start-period=30s --retries=3 \
     CMD curl -f http://localhost:${PORT}/health || exit 1
 

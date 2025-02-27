@@ -11,6 +11,8 @@ services:
       - ./logs:/app/logs
     env_file:
       - .env
+    environment:
+      - PORT=8080
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
