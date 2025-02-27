@@ -9,14 +9,15 @@ ENV PYTHONUNBUFFERED=1 \
     GRADIO_SERVER_PORT=8080 \
     GRADIO_ROOT_PATH=/
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    lib32gcc-s1 \
-    lib32stdc++6 \
-    libstdc++6:i386 \
+# Install system dependencies - fixing 32-bit library issues
+RUN dpkg --add-architecture i386 && \
+    apt-get update && apt-get install -y \
     curl \
     wget \
     procps \
+    libstdc++6 \
+    lib32stdc++6 \
+    ca-certificates \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
