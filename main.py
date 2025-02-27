@@ -5,6 +5,8 @@ import subprocess
 import time
 import threading
 import logging
+import psutil
+import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Tuple, Optional
@@ -12,56 +14,140 @@ import json
 import requests
 from dotenv import load_dotenv
 import gradio as gr
-from prometheus_client import Counter, Gauge, start_http_server
+from prometheus_client import Counter, Gauge, Histogram, start_http_server
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 # Load environment variables
 load_dotenv()
 
-# Configure logging
+# Configure logging with more detail
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
+LOG_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s'
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL),
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format=LOG_FORMAT,
     handlers=[
         logging.FileHandler("logs/steam_downloader.log"),
-        logging.StreamHandler()
+        logging.StreamHandler(),
+        logging.handlers.RotatingFileHandler(
+            "logs/steam_downloader.log",
+            maxBytes=10485760,  # 10MB
+            backupCount=5
+        )
     ]
 )
 logger = logging.getLogger("SteamDownloader")
 
-# Configure metrics
+# Enhanced metrics
 DOWNLOAD_COUNTER = Counter('steam_downloads_total', 'Total number of downloads')
 DOWNLOAD_ERRORS = Counter('steam_download_errors_total', 'Total number of download errors')
 ACTIVE_DOWNLOADS = Gauge('steam_active_downloads', 'Number of active downloads')
+DOWNLOAD_SIZE = Histogram('steam_download_size_bytes', 'Download size in bytes')
+DOWNLOAD_TIME = Histogram('steam_download_duration_seconds', 'Download duration in seconds')
+DISK_USAGE = Gauge('steam_disk_usage_bytes', 'Disk usage in bytes')
+MEMORY_USAGE = Gauge('steam_memory_usage_bytes', 'Memory usage in bytes')
 
 # Railway configuration
 PORT = int(os.getenv('PORT', '8080'))
 PUBLIC_URL = os.getenv('PUBLIC_URL', '')
 RAILWAY_STATIC_URL = os.getenv('RAILWAY_STATIC_URL', '')
+VOLUME_PATH = os.getenv('RAILWAY_VOLUME_MOUNT_PATH', '/data')
 
 # Create FastAPI app
-app = FastAPI()
+app = FastAPI(
+    title="Steam Game Downloader",
+    description="A SteamCMD-based game downloader with monitoring and health checks",
+    version="1.0.0"
+)
+
+class SystemStatus(BaseModel):
+    disk_total: int
+    disk_used: int
+    disk_free: int
+    memory_total: int
+    memory_used: int
+    memory_free: int
+    cpu_percent: float
+    active_downloads: int
+    total_downloads: int
+    error_count: int
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
+    """Enhanced health check endpoint"""
     try:
         # Check if SteamCMD is available
         steamcmd_path = "/app/steamcmd/steamcmd.sh"
         if not os.path.exists(steamcmd_path):
-            return {"status": "unhealthy", "reason": "SteamCMD not found"}, 503
+            raise HTTPException(status_code=503, detail="SteamCMD not found")
         
-        # Check if required directories exist
-        required_dirs = ["/app/downloads", "/app/public", "/app/logs"]
+        # Check if required directories exist and are writable
+        required_dirs = ["/app/downloads", "/app/public", "/app/logs", VOLUME_PATH]
         for directory in required_dirs:
             if not os.path.exists(directory):
-                return {"status": "unhealthy", "reason": f"Required directory missing: {directory}"}, 503
+                raise HTTPException(status_code=503, detail=f"Required directory missing: {directory}")
+            if not os.access(directory, os.W_OK):
+                raise HTTPException(status_code=503, detail=f"Directory not writable: {directory}")
         
-        return {"status": "healthy"}
+        # Check system resources
+        disk = shutil.disk_usage(VOLUME_PATH)
+        if disk.free < 1024 * 1024 * 1024:  # Less than 1GB free
+            raise HTTPException(status_code=503, detail="Insufficient disk space")
+        
+        # Update metrics
+        DISK_USAGE.set(disk.used)
+        MEMORY_USAGE.set(psutil.Process().memory_info().rss)
+        
+        return {
+            "status": "healthy",
+            "timestamp": datetime.utcnow().isoformat(),
+            "version": "1.0.0",
+            "steamcmd_status": "available"
+        }
     except Exception as e:
-        return {"status": "unhealthy", "reason": str(e)}, 503
+        logger.error(f"Health check failed: {str(e)}")
+        return JSONResponse(
+            status_code=503,
+            content={"status": "unhealthy", "reason": str(e)}
+        )
+
+@app.get("/metrics")
+async def get_metrics():
+    """System metrics endpoint"""
+    try:
+        disk = shutil.disk_usage(VOLUME_PATH)
+        memory = psutil.virtual_memory()
+        
+        return SystemStatus(
+            disk_total=disk.total,
+            disk_used=disk.used,
+            disk_free=disk.free,
+            memory_total=memory.total,
+            memory_used=memory.used,
+            memory_free=memory.available,
+            cpu_percent=psutil.cpu_percent(),
+            active_downloads=ACTIVE_DOWNLOADS._value.get(),
+            total_downloads=DOWNLOAD_COUNTER._value.get(),
+            error_count=DOWNLOAD_ERRORS._value.get()
+        )
+    except Exception as e:
+        logger.error(f"Error getting metrics: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/status")
+async def get_status():
+    """Application status endpoint"""
+    return {
+        "status": "running",
+        "version": "1.0.0",
+        "uptime": time.time() - psutil.Process().create_time(),
+        "public_url": PUBLIC_URL,
+        "railway_url": RAILWAY_STATIC_URL,
+        "volume_path": VOLUME_PATH
+    }
 
 class SteamDownloader:
     def __init__(self):
@@ -666,6 +752,20 @@ def create_gradio_interface():
     
     return app
 
+def cleanup_background():
+    """Cleanup old downloads and logs"""
+    while True:
+        try:
+            # Clean up old downloads (older than 24 hours)
+            cleanup_old_files("/app/downloads", max_age_hours=24)
+            # Rotate logs if needed
+            cleanup_old_files("/app/logs", max_age_hours=72)
+            # Update metrics
+            update_system_metrics()
+        except Exception as e:
+            logger.error(f"Cleanup error: {str(e)}")
+        time.sleep(3600)  # Run every hour
+
 def main():
     # Create and configure the Gradio interface
     gradio_app = create_gradio_interface()
@@ -674,20 +774,30 @@ def main():
     logger.info(f"Starting server on port {PORT}")
     logger.info(f"Public URL: {PUBLIC_URL}")
     logger.info(f"Railway Static URL: {RAILWAY_STATIC_URL}")
+    logger.info(f"Volume Path: {VOLUME_PATH}")
     
-    # Create FastAPI app with Gradio
-    app = FastAPI()
+    # Start background tasks
+    background_thread = threading.Thread(target=cleanup_background, daemon=True)
+    background_thread.start()
     
-    # Add health check endpoint
-    @app.get("/health")
-    async def health():
-        return {"status": "healthy"}
+    # Start metrics server
+    if os.getenv('ENABLE_METRICS', 'true').lower() == 'true':
+        metrics_port = int(os.getenv('METRICS_PORT', '9090'))
+        start_http_server(metrics_port)
+        logger.info(f"Metrics server started on port {metrics_port}")
     
     # Mount Gradio app
     app = gr.mount_gradio_app(app, gradio_app, path="/")
     
     # Start the server
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=PORT,
+        log_level="info",
+        proxy_headers=True,
+        forwarded_allow_ips="*"
+    )
 
 if __name__ == "__main__":
     main()
