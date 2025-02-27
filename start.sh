@@ -6,6 +6,14 @@ mkdir -p /app/downloads /app/public /app/logs /data/downloads /data/public
 
 # Set default port
 export PORT="${PORT:-8080}"
+export HOST="0.0.0.0"
+
+# Output debug information
+echo "Environment variables:"
+echo "PORT: $PORT"
+echo "PUBLIC_URL: $PUBLIC_URL"
+echo "RAILWAY_STATIC_URL: $RAILWAY_STATIC_URL"
+echo "RAILWAY_PUBLIC_DOMAIN: $RAILWAY_PUBLIC_DOMAIN"
 
 # Wait for needed system resources
 sleep 2
