@@ -7,7 +7,7 @@ import threading
 import logging
 import psutil
 import shutil
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Any, Tuple, Optional
 import json
@@ -752,6 +752,41 @@ def create_gradio_interface():
     
     return app
 
+def cleanup_old_files(directory, max_age_hours=24):
+    """Clean up files older than the specified age"""
+    try:
+        now = datetime.now()
+        max_age = timedelta(hours=max_age_hours)
+        directory_path = Path(directory)
+        
+        if not directory_path.exists():
+            logger.warning(f"Directory does not exist: {directory}")
+            return
+            
+        for item in directory_path.glob('**/*'):
+            if item.is_file():
+                file_age = now - datetime.fromtimestamp(item.stat().st_mtime)
+                if file_age > max_age:
+                    try:
+                        item.unlink()
+                        logger.info(f"Removed old file: {item}")
+                    except Exception as e:
+                        logger.error(f"Failed to remove file {item}: {str(e)}")
+    except Exception as e:
+        logger.error(f"Error in cleanup_old_files: {str(e)}")
+
+def update_system_metrics():
+    """Update system metrics for monitoring"""
+    try:
+        # Update disk usage metrics
+        disk = shutil.disk_usage(VOLUME_PATH)
+        DISK_USAGE.set(disk.used)
+        
+        # Update memory usage metrics
+        MEMORY_USAGE.set(psutil.Process().memory_info().rss)
+    except Exception as e:
+        logger.error(f"Error updating system metrics: {str(e)}")
+
 def cleanup_background():
     """Cleanup old downloads and logs"""
     while True:
@@ -786,12 +821,12 @@ def main():
         start_http_server(metrics_port)
         logger.info(f"Metrics server started on port {metrics_port}")
     
-    # Mount Gradio app
-    app = gr.mount_gradio_app(app, gradio_app, path="/")
+    # Mount Gradio app to FastAPI
+    final_app = gr.mount_gradio_app(app, gradio_app, path="/")
     
     # Start the server
     uvicorn.run(
-        app,
+        final_app,
         host="0.0.0.0",
         port=PORT,
         log_level="info",
