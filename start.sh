@@ -5,25 +5,25 @@ echo "=== System Information ==="
 uname -a
 echo "=========================="
 
-echo "=== Directory Structure ==="
-mkdir -p /app/downloads /app/public /app/logs /data/downloads /data/public
-ls -la /app
-ls -la /data
-echo "==========================="
+# Create and ensure required directories
+mkdir -p /app/downloads /app/public /app/logs
+mkdir -p /data/downloads /data/public
 
-echo "=== Python Information ==="
-which python
-python --version
-pip --version
-echo "=========================="
-
-echo "=== Environment Variables ==="
-env | grep -E 'PORT|PUBLIC|RAILWAY|HOST'
-echo "============================="
+# Set permissions
+chmod -R 755 /app/steamcmd
+chmod -R 777 /data
 
 # Set default port
 export PORT="${PORT:-8080}"
 export HOST="0.0.0.0"
+
+# Output environment variables
+echo "=== Environment Variables ==="
+echo "PORT: $PORT"
+echo "PUBLIC_URL: $PUBLIC_URL"
+echo "RAILWAY_STATIC_URL: $RAILWAY_STATIC_URL"
+echo "RAILWAY_PUBLIC_DOMAIN: $RAILWAY_PUBLIC_DOMAIN"
+echo "============================"
 
 # Link Railway volume if available
 if [ -d "/data" ]; then
@@ -32,11 +32,14 @@ if [ -d "/data" ]; then
     echo "Railway volume mounted and linked"
 fi
 
-# Install dependencies explicitly
-echo "=== Installing Dependencies ==="
-pip install flask requests
-echo "=============================="
+# Update SteamCMD
+echo "Updating SteamCMD..."
+python update_steamcmd.py
+
+# Start the cleanup service in background
+echo "Starting cleanup service..."
+python cleanup.py &
 
 # Start the application
 echo "Starting application on port $PORT"
-exec python main.py 
+exec python main.py

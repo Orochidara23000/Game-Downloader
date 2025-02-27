@@ -1,184 +1,319 @@
 #!/usr/bin/env python3
+"""
+Steam Game Downloader
+A web interface for downloading Steam games using SteamCMD
+"""
 import os
 import sys
 import subprocess
+import threading
 import logging
 import time
 import json
 from pathlib import Path
-from http.server import HTTPServer, BaseHTTPRequestHandler
+import gradio as gr
+import psutil
+from prometheus_client import Counter, Gauge, start_http_server
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler("/app/logs/steam_downloader.log")
+    ]
 )
-logger = logging.getLogger()
+logger = logging.getLogger("SteamDownloader")
 
-# Get configuration
-PORT = int(os.environ.get('PORT', 8080))
+# Constants and configuration
+PORT = int(os.environ.get("PORT", 8080))
+METRICS_PORT = int(os.environ.get("METRICS_PORT", 9090))
+DATA_DIR = Path(os.environ.get("RAILWAY_VOLUME_MOUNT_PATH", "/data"))
+DOWNLOADS_DIR = DATA_DIR / "downloads"
+PUBLIC_DIR = DATA_DIR / "public"
+STEAMCMD_PATH = Path("/app/steamcmd/steamcmd.sh")
 
-# Install dependencies
-def install_dependencies():
-    """Install required Python packages"""
-    logger.info("Checking and installing dependencies...")
+# Create necessary directories
+DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
+PUBLIC_DIR.mkdir(parents=True, exist_ok=True)
+Path("/app/logs").mkdir(parents=True, exist_ok=True)
+
+# Metrics
+DOWNLOAD_COUNTER = Counter('steam_downloads_total', 'Total number of downloads')
+DOWNLOAD_FAILURES = Counter('steam_downloads_failed', 'Failed downloads')
+ACTIVE_DOWNLOADS = Gauge('steam_downloads_active', 'Currently active downloads')
+DISK_USAGE = Gauge('steam_disk_usage_bytes', 'Disk usage in bytes')
+
+# Track active downloads
+active_downloads = {}
+download_lock = threading.Lock()
+
+def update_metrics():
+    """Update system metrics"""
     try:
-        # Define required packages
-        required_packages = ['flask']
+        # Update disk usage
+        disk_usage = psutil.disk_usage(str(DATA_DIR))
+        DISK_USAGE.set(disk_usage.used)
         
-        # Install packages using pip
-        subprocess.check_call([
-            sys.executable, "-m", "pip", "install", "--upgrade", "pip"
+        # Update active downloads count
+        with download_lock:
+            ACTIVE_DOWNLOADS.set(len(active_downloads))
+            
+    except Exception as e:
+        logger.error(f"Error updating metrics: {e}")
+
+def verify_steamcmd():
+    """Verify SteamCMD installation"""
+    logger.info("Verifying SteamCMD installation...")
+    
+    if not STEAMCMD_PATH.exists():
+        logger.error("SteamCMD not found!")
+        return False
+        
+    try:
+        # Test SteamCMD
+        result = subprocess.run(
+            [str(STEAMCMD_PATH), "+quit"],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        
+        if result.returncode != 0:
+            logger.error(f"SteamCMD verification failed: {result.stderr}")
+            return False
+            
+        logger.info("SteamCMD verification successful")
+        return True
+        
+    except Exception as e:
+        logger.error(f"SteamCMD verification error: {e}")
+        return False
+
+def download_game(app_id, username=None, password=None, steam_guard=None):
+    """Download a Steam game using SteamCMD"""
+    if not app_id or not app_id.strip():
+        return "Error: Please enter a valid App ID"
+    
+    app_id = app_id.strip()
+    download_id = f"{app_id}_{int(time.time())}"
+    download_path = DOWNLOADS_DIR / app_id
+    
+    # Create download directory
+    download_path.mkdir(parents=True, exist_ok=True)
+    
+    logger.info(f"Starting download for App ID: {app_id}")
+    
+    # Build SteamCMD command
+    cmd = [
+        str(STEAMCMD_PATH),
+        "+@NoPromptForPassword 1"
+    ]
+    
+    # Add login details if provided
+    if username and password:
+        cmd.extend([
+            f"+login {username} {password}"
         ])
-        
-        for package in required_packages:
-            logger.info(f"Installing {package}...")
-            subprocess.check_call([
-                sys.executable, "-m", "pip", "install", package
-            ])
-        
-        logger.info("All dependencies installed successfully")
-        return True
-    except Exception as e:
-        logger.error(f"Error installing dependencies: {e}")
-        return False
-
-# Simple HTTP request handler
-class SimpleHTTPHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        if self.path == '/':
-            self.send_response(200)
-            self.send_header('Content-type', 'text/html')
-            self.end_headers()
-            self.wfile.write(HTML_CONTENT.encode())
-        elif self.path == '/health':
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps({"status": "healthy"}).encode())
-        elif self.path == '/debug':
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json')
-            self.end_headers()
-            
-            # Collect debug information
-            debug_info = {
-                "environment": {k: v for k, v in os.environ.items()},
-                "working_directory": os.getcwd(),
-                "files": [str(f) for f in Path('.').glob('*')]
-            }
-            
-            self.wfile.write(json.dumps(debug_info, indent=2).encode())
-        else:
-            self.send_response(404)
-            self.send_header('Content-type', 'text/plain')
-            self.end_headers()
-            self.wfile.write(b'Not Found')
+        if steam_guard:
+            cmd[-1] += f" {steam_guard}"
+    else:
+        cmd.append("+login anonymous")
     
-    def log_message(self, format, *args):
-        """Override to use our logger"""
-        logger.info("%s - %s" % (self.address_string(), format % args))
-
-# Simple HTML content
-HTML_CONTENT = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Steam Game Downloader</title>
-    <style>
-        body { font-family: Arial, sans-serif; margin: 20px; }
-        h1 { color: #333; }
-        .container { background: #f5f5f5; padding: 20px; border-radius: 5px; margin-top: 20px; }
-    </style>
-</head>
-<body>
-    <h1>Steam Game Downloader</h1>
-    <div class="container">
-        <p>This is a simple Steam Game Downloader service.</p>
-        <p>Check the <a href="/debug">debug information</a> for environment details.</p>
-        <p>Use the <a href="/health">health check</a> to verify the service is running.</p>
-    </div>
-</body>
-</html>
-"""
-
-def run_simple_server():
-    """Run a simple HTTP server without dependencies"""
-    logger.info(f"Starting simple HTTP server on port {PORT}")
-    server = HTTPServer(('0.0.0.0', PORT), SimpleHTTPHandler)
+    # Add download commands
+    cmd.extend([
+        f"+force_install_dir {download_path}",
+        f"+app_update {app_id} validate",
+        "+quit"
+    ])
     
-    try:
-        logger.info(f"Server started at http://0.0.0.0:{PORT}")
-        server.serve_forever()
-    except KeyboardInterrupt:
-        logger.info("Server stopped by user")
-    except Exception as e:
-        logger.error(f"Server error: {e}")
-    finally:
-        server.server_close()
+    # Start download in a separate thread
+    def download_thread():
+        try:
+            with download_lock:
+                active_downloads[download_id] = {
+                    "app_id": app_id,
+                    "status": "starting",
+                    "start_time": time.time(),
+                    "download_path": str(download_path)
+                }
+                
+            # Run SteamCMD command
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            
+            with download_lock:
+                active_downloads[download_id]["status"] = "downloading"
+                active_downloads[download_id]["process"] = process
+            
+            # Wait for completion
+            stdout, stderr = process.communicate()
+            
+            if process.returncode == 0:
+                # Success
+                with download_lock:
+                    active_downloads[download_id]["status"] = "completed"
+                    active_downloads[download_id]["end_time"] = time.time()
+                
+                # Create a public link
+                try:
+                    # Create symlink in public directory
+                    public_link = PUBLIC_DIR / app_id
+                    if public_link.exists():
+                        if public_link.is_symlink():
+                            public_link.unlink()
+                    
+                    # Create relative symlink
+                    public_link.symlink_to(download_path)
+                    
+                    with download_lock:
+                        active_downloads[download_id]["public_link"] = str(public_link)
+                        
+                except Exception as e:
+                    logger.error(f"Error creating public link: {e}")
+                
+                DOWNLOAD_COUNTER.inc()
+                logger.info(f"Download completed for App ID: {app_id}")
+            else:
+                # Failure
+                with download_lock:
+                    active_downloads[download_id]["status"] = "failed"
+                    active_downloads[download_id]["error"] = stderr
+                
+                DOWNLOAD_FAILURES.inc()
+                logger.error(f"Download failed for App ID: {app_id}: {stderr}")
+            
+            # Update metrics
+            update_metrics()
+            
+        except Exception as e:
+            with download_lock:
+                active_downloads[download_id]["status"] = "error"
+                active_downloads[download_id]["error"] = str(e)
+            
+            DOWNLOAD_FAILURES.inc()
+            logger.error(f"Error during download for App ID {app_id}: {e}")
+            update_metrics()
+    
+    # Start the download thread
+    download_thread = threading.Thread(target=download_thread)
+    download_thread.daemon = True
+    download_thread.start()
+    
+    return f"Download started for App ID: {app_id} (ID: {download_id})"
 
-def run_flask_server():
-    """Run Flask server if dependencies are installed"""
+def get_downloads_status():
+    """Get the status of all downloads"""
+    with download_lock:
+        # Create a copy without process objects (not serializable)
+        downloads_copy = {}
+        for download_id, download in active_downloads.items():
+            download_copy = download.copy()
+            if "process" in download_copy:
+                download_copy["process"] = "Running" if download_copy["process"].poll() is None else "Completed"
+            downloads_copy[download_id] = download_copy
+        
+        return downloads_copy
+
+def create_gradio_interface():
+    """Create Gradio web interface"""
+    with gr.Blocks(title="Steam Game Downloader") as interface:
+        gr.Markdown("# Steam Game Downloader")
+        gr.Markdown("Download games from Steam using SteamCMD")
+        
+        with gr.Row():
+            with gr.Column():
+                app_id = gr.Textbox(label="Steam App ID", placeholder="Enter Steam App ID (e.g., 730 for CS:GO)")
+                
+                with gr.Accordion("Login Details (Optional)", open=False):
+                    username = gr.Textbox(label="Steam Username", placeholder="Optional: For non-free games")
+                    password = gr.Textbox(label="Steam Password", placeholder="Optional: For non-free games", type="password")
+                    steam_guard = gr.Textbox(label="Steam Guard Code", placeholder="Optional: If 2FA is enabled")
+                
+                download_btn = gr.Button("Download Game")
+                status_text = gr.Markdown("Ready to download")
+            
+            with gr.Column():
+                download_info = gr.JSON(label="Download Status")
+                refresh_btn = gr.Button("Refresh Status")
+        
+        # Download function
+        download_btn.click(
+            fn=download_game,
+            inputs=[app_id, username, password, steam_guard],
+            outputs=status_text
+        )
+        
+        # Get status function
+        refresh_btn.click(
+            fn=get_downloads_status,
+            inputs=[],
+            outputs=download_info
+        )
+        
+        # Auto-refresh every 5 seconds
+        gr.on(
+            triggers=[interface.load, gr.every(5)],
+            fn=get_downloads_status,
+            inputs=[],
+            outputs=download_info
+        )
+    
+    return interface
+
+def start_metrics_server():
+    """Start Prometheus metrics server"""
     try:
-        # Try to import Flask
-        from flask import Flask, render_template_string, jsonify
-        
-        app = Flask(__name__)
-        
-        @app.route('/')
-        def index():
-            return render_template_string(HTML_CONTENT)
-        
-        @app.route('/health')
-        def health():
-            return jsonify({"status": "healthy"})
-        
-        @app.route('/debug')
-        def debug():
-            debug_info = {
-                "environment": {k: v for k, v in os.environ.items()},
-                "working_directory": os.getcwd(),
-                "files": [str(f) for f in Path('.').glob('*')]
-            }
-            return jsonify(debug_info)
-        
-        logger.info(f"Starting Flask server on port {PORT}")
-        app.run(host='0.0.0.0', port=PORT)
-        return True
-    except ImportError:
-        logger.warning("Flask not available, falling back to simple server")
-        return False
+        start_http_server(METRICS_PORT)
+        logger.info(f"Metrics server started on port {METRICS_PORT}")
     except Exception as e:
-        logger.error(f"Error running Flask server: {e}")
-        return False
+        logger.error(f"Failed to start metrics server: {e}")
 
 def main():
     """Main application entry point"""
-    logger.info("Starting Steam Downloader application")
-    
-    # Log environment info
-    logger.info("=== ENVIRONMENT ===")
-    for key, value in os.environ.items():
-        if key.startswith(('PORT', 'PUBLIC', 'RAILWAY', 'HOST')):
-            logger.info(f"{key}: {value}")
-    logger.info("==================")
-    
-    # Show file system info
-    logger.info("=== FILES ===")
-    for item in Path('.').glob('*'):
-        logger.info(f"{item} {'(dir)' if item.is_dir() else '(file)'}")
-    logger.info("============")
-    
-    # Try to install dependencies
-    deps_installed = install_dependencies()
-    
-    # Try to run Flask server
-    if deps_installed and run_flask_server():
-        logger.info("Successfully started Flask server")
-    else:
-        # Fall back to simple server
-        logger.info("Falling back to simple HTTP server")
-        run_simple_server()
+    try:
+        # Print application info
+        logger.info(f"Starting Steam Game Downloader on port {PORT}")
+        logger.info(f"Data directory: {DATA_DIR}")
+        logger.info(f"Downloads directory: {DOWNLOADS_DIR}")
+        logger.info(f"Public directory: {PUBLIC_DIR}")
+        
+        # Verify SteamCMD installation
+        logger.info("Verifying SteamCMD installation...")
+        if not verify_steamcmd():
+            logger.error("SteamCMD verification failed. Service may not work correctly.")
+        
+        # Start metrics server
+        start_metrics_server()
+        
+        # Start initial metrics update
+        update_metrics()
+        
+        # Create and start Gradio interface
+        logger.info("Creating Gradio interface...")
+        demo = create_gradio_interface()
+        
+        # Log server details
+        logger.info(f"Starting server on port {PORT}")
+        logger.info(f"Public URL: {os.environ.get('PUBLIC_URL', '')}")
+        logger.info(f"Railway URL: {os.environ.get('RAILWAY_PUBLIC_DOMAIN', '')}")
+        
+        # Launch the interface
+        demo.launch(
+            server_name="0.0.0.0",
+            server_port=PORT,
+            share=False,
+            debug=False
+        )
+        
+    except Exception as e:
+        logger.critical(f"Fatal error in main application: {e}", exc_info=True)
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()

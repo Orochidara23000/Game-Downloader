@@ -1,11 +1,12 @@
 # requirements.txt
 flask>=2.0.0
-requests>=2.25.0
+requests>=2.31.0
 python-dotenv>=1.0.0
 fastapi>=0.103.1
 uvicorn>=0.23.2
 psutil>=5.9.5
 pydantic>=1.8.0
+gradio>=3.50.2
 
 # Optional: for better logging and monitoring
 prometheus-client>=0.17.1
