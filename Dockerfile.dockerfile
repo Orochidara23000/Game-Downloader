@@ -48,9 +48,6 @@ COPY . .
 RUN chmod +x start.sh
 RUN chmod +x /app/steamcmd/steamcmd.sh
 
-# Volume for persistent data
-VOLUME ["/data"]
-
 # Expose ports
 EXPOSE ${PORT}
 EXPOSE ${METRICS_PORT}
