@@ -629,7 +629,16 @@ class SteamDownloader:
 
 def create_gradio_interface():
     """Create Gradio web interface"""
-    with gr.Blocks(title="Steam Game Downloader") as interface:
+    # Configure Gradio settings to show the URL
+    public_url = os.getenv('PUBLIC_URL', '')
+    railway_url = os.getenv('RAILWAY_STATIC_URL', '')
+    
+    # Log URLs for debugging
+    logger.info(f"Creating Gradio interface with public URL: {public_url}")
+    logger.info(f"Railway static URL: {railway_url}")
+    
+    # Create the interface
+    with gr.Blocks(title="Steam Game Downloader", analytics_enabled=False) as interface:
         gr.Markdown("# Steam Game Downloader")
         gr.Markdown("Enter the Steam App ID to download games")
         
@@ -670,7 +679,6 @@ def create_gradio_interface():
         
         refresh_btn.click(get_status, outputs=download_info)
     
-    # This is important - return the interface
     return interface
 
 def cleanup_old_files(directory, max_age_hours=24):
@@ -750,22 +758,31 @@ def main():
         async def health_check():
             return {"status": "healthy"}
         
-        # Create Gradio interface
+        # Create Gradio interface with explicit sharing settings
         logger.info("Creating Gradio interface...")
         gradio_app = create_gradio_interface()
         
         # Log startup information
         port = int(os.getenv('PORT', '8080'))
-        logger.info(f"Starting server on port {port}")
+        public_url = os.getenv('PUBLIC_URL', '')
+        railway_url = os.getenv('RAILWAY_STATIC_URL', '')
         
-        # Mount Gradio app to FastAPI - THIS IS CRITICAL
-        # The Gradio app must be mounted with gr.mount_gradio_app and stored in a new variable
+        logger.info(f"Starting server on port {port}")
+        logger.info(f"Public URL: {public_url}")
+        logger.info(f"Railway URL: {railway_url}")
+        
+        # Add an index redirect to the Gradio interface
+        @api.get("/")
+        async def redirect_to_gradio():
+            return {"message": "API Root - Gradio interface is available at /"}
+        
+        # Mount Gradio app to FastAPI
         final_app = gr.mount_gradio_app(api, gradio_app, path="/")
         
-        # Start the server - USE THE MOUNTED APP
+        # Start the server with explicit host binding
         uvicorn.run(
-            final_app,  # Use the final_app, not api or app
-            host="0.0.0.0",  # Important: bind to all interfaces
+            final_app,
+            host="0.0.0.0",
             port=port,
             log_level="info"
         )
