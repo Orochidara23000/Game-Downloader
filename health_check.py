@@ -1,146 +1,172 @@
+#!/usr/bin/env python3
+"""
+Health check service for Steam Game Downloader
+- Monitors application health
+- Checks SteamCMD functionality
+- Reports system metrics
+"""
 import os
 import sys
-import time
-import psutil
 import requests
+import psutil
 import logging
-from pathlib import Path
+import json
 import subprocess
+from pathlib import Path
+from datetime import datetime
+from flask import Flask, jsonify
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler("/app/logs/health_check.log")
+    ]
 )
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("HealthCheck")
 
-class HealthChecker:
-    def __init__(self):
-        self.port = os.getenv('PORT', '8080')
-        self.data_dir = Path('/data')
-        self.app_dir = Path('/app')
-        self.min_disk_space = 1024 * 1024 * 1024  # 1GB
-        self.max_memory_percent = 90
-        self.max_cpu_percent = 90
+# Constants
+APP_PORT = int(os.environ.get("PORT", 8080))
+HEALTH_PORT = int(os.environ.get("HEALTH_PORT", 8081))
+DATA_DIR = Path(os.environ.get("RAILWAY_VOLUME_MOUNT_PATH", "/data"))
+DOWNLOADS_DIR = DATA_DIR / "downloads"
+PUBLIC_DIR = DATA_DIR / "public"
+STEAMCMD_PATH = Path("/app/steamcmd/steamcmd.sh")
 
-    def check_steamcmd(self):
-        """Comprehensive SteamCMD check"""
-        try:
-            # Check executable
-            steamcmd_path = self.app_dir / 'steamcmd' / 'steamcmd.sh'
-            if not steamcmd_path.exists():
-                raise Exception("SteamCMD executable not found")
-            
-            # Check permissions
-            if not os.access(steamcmd_path, os.X_OK):
-                raise Exception("SteamCMD not executable")
-            
-            # Check Steam libraries
-            steam_lib_path = self.app_dir / 'steamcmd' / 'linux32'
-            if not steam_lib_path.exists():
-                raise Exception("Steam libraries not found")
-            
-            # Test SteamCMD
-            result = subprocess.run(
-                [str(steamcmd_path), '+quit'],
-                capture_output=True,
-                text=True,
-                timeout=30
-            )
-            
-            if result.returncode != 0:
-                raise Exception(f"SteamCMD test failed: {result.stderr}")
-            
-            return True
-        
-        except Exception as e:
-            logger.error(f"SteamCMD check failed: {str(e)}")
-            return False
+# Create Flask app
+app = Flask(__name__)
 
-    def check_directories(self):
-        """Check if required directories exist and are writable"""
-        required_dirs = [
-            self.data_dir / 'downloads',
-            self.data_dir / 'public',
-            self.app_dir / 'logs'
-        ]
-        
-        for directory in required_dirs:
-            if not directory.exists():
-                raise Exception(f"Directory not found: {directory}")
-            if not os.access(directory, os.W_OK):
-                raise Exception(f"Directory not writable: {directory}")
-        return True
+def check_disk_space():
+    """Check available disk space"""
+    try:
+        disk = psutil.disk_usage(str(DATA_DIR))
+        return {
+            "total_gb": round(disk.total / (1024**3), 2),
+            "used_gb": round(disk.used / (1024**3), 2),
+            "free_gb": round(disk.free / (1024**3), 2),
+            "percent_used": disk.percent,
+            "status": "ok" if disk.percent < 90 else "warning" if disk.percent < 95 else "critical"
+        }
+    except Exception as e:
+        logger.error(f"Error checking disk space: {e}")
+        return {"status": "error", "message": str(e)}
 
-    def check_system_resources(self):
-        """Check system resource usage"""
-        # Check disk space
-        disk_usage = psutil.disk_usage(str(self.data_dir))
-        if disk_usage.free < self.min_disk_space:
-            raise Exception(f"Low disk space: {disk_usage.free / 1024 / 1024:.2f}MB free")
-
-        # Check memory usage
+def check_memory():
+    """Check system memory"""
+    try:
         memory = psutil.virtual_memory()
-        if memory.percent > self.max_memory_percent:
-            raise Exception(f"High memory usage: {memory.percent}%")
+        return {
+            "total_gb": round(memory.total / (1024**3), 2),
+            "used_gb": round(memory.used / (1024**3), 2),
+            "available_gb": round(memory.available / (1024**3), 2),
+            "percent_used": memory.percent,
+            "status": "ok" if memory.percent < 85 else "warning" if memory.percent < 95 else "critical"
+        }
+    except Exception as e:
+        logger.error(f"Error checking memory: {e}")
+        return {"status": "error", "message": str(e)}
 
-        # Check CPU usage
-        cpu_percent = psutil.cpu_percent(interval=1)
-        if cpu_percent > self.max_cpu_percent:
-            raise Exception(f"High CPU usage: {cpu_percent}%")
+def check_app_service():
+    """Check if the main application is responding"""
+    try:
+        response = requests.get(f"http://localhost:{APP_PORT}/health", timeout=5)
+        if response.status_code == 200:
+            return {"status": "ok", "message": "Application is running"}
+        else:
+            return {"status": "error", "message": f"Application returned status code {response.status_code}"}
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error connecting to application: {e}")
+        return {"status": "error", "message": f"Could not connect to application: {str(e)}"}
 
-        return True
-
-    def check_api_health(self, max_retries=3, retry_delay=2):
-        """Check if the API is responding"""
-        url = f"http://localhost:{self.port}/health"
-        
-        for attempt in range(max_retries):
-            try:
-                response = requests.get(url, timeout=5)
-                if response.status_code == 200:
-                    return True
-                else:
-                    logger.warning(f"Health check failed with status code: {response.status_code}")
-                    logger.warning(f"Response: {response.text}")
-            except Exception as e:
-                logger.error(f"Health check attempt {attempt + 1} failed: {str(e)}")
+def check_steamcmd():
+    """Check if SteamCMD is working"""
+    try:
+        if not STEAMCMD_PATH.exists():
+            return {"status": "error", "message": "SteamCMD not found"}
             
-            if attempt < max_retries - 1:
-                logger.info(f"Retrying in {retry_delay} seconds...")
-                time.sleep(retry_delay)
+        result = subprocess.run(
+            [str(STEAMCMD_PATH), "+quit"],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
         
-        raise Exception("API health check failed after all retries")
+        if result.returncode == 0:
+            return {"status": "ok", "message": "SteamCMD is working"}
+        else:
+            return {"status": "error", "message": f"SteamCMD returned error: {result.stderr}"}
+    except Exception as e:
+        logger.error(f"Error checking SteamCMD: {e}")
+        return {"status": "error", "message": str(e)}
 
-    def run_health_check(self):
-        """Run all health checks"""
+def check_downloads_dir():
+    """Check if downloads directory is accessible"""
+    try:
+        if not DOWNLOADS_DIR.exists():
+            return {"status": "warning", "message": "Downloads directory does not exist"}
+            
+        # Check if directory is writable
+        temp_file = DOWNLOADS_DIR / f"test_{datetime.now().timestamp()}.tmp"
         try:
-            checks = {
-                "SteamCMD": self.check_steamcmd,
-                "Directories": self.check_directories,
-                "System Resources": self.check_system_resources,
-                "API Health": self.check_api_health
-            }
-
-            results = {}
-            for name, check in checks.items():
-                try:
-                    results[name] = check()
-                    logger.info(f"{name} check passed")
-                except Exception as e:
-                    logger.error(f"{name} check failed: {str(e)}")
-                    results[name] = False
-
-            return all(results.values())
-
+            with open(temp_file, 'w') as f:
+                f.write("test")
+            temp_file.unlink()
+            return {"status": "ok", "message": "Downloads directory is writable"}
         except Exception as e:
-            logger.error(f"Health check failed: {str(e)}")
-            return False
+            return {"status": "error", "message": f"Downloads directory is not writable: {str(e)}"}
+    except Exception as e:
+        logger.error(f"Error checking downloads directory: {e}")
+        return {"status": "error", "message": str(e)}
+
+@app.route('/health')
+def health():
+    """Simple health check endpoint"""
+    return jsonify({"status": "healthy"})
+
+@app.route('/status')
+def status():
+    """Detailed status check"""
+    checks = {
+        "disk": check_disk_space(),
+        "memory": check_memory(),
+        "app_service": check_app_service(),
+        "steamcmd": check_steamcmd(),
+        "downloads_directory": check_downloads_dir(),
+        "timestamp": datetime.now().isoformat()
+    }
+    
+    # Determine overall status
+    if any(check["status"] == "error" for check in checks.values() if isinstance(check, dict) and "status" in check):
+        checks["overall_status"] = "error"
+    elif any(check["status"] == "critical" for check in checks.values() if isinstance(check, dict) and "status" in check):
+        checks["overall_status"] = "critical"
+    elif any(check["status"] == "warning" for check in checks.values() if isinstance(check, dict) and "status" in check):
+        checks["overall_status"] = "warning"
+    else:
+        checks["overall_status"] = "ok"
+    
+    # Set response status code based on overall status
+    status_code = 200
+    if checks["overall_status"] in ["error", "critical"]:
+        status_code = 500
+    elif checks["overall_status"] == "warning":
+        status_code = 429
+    
+    return jsonify(checks), status_code
 
 def main():
-    checker = HealthChecker()
-    success = checker.run_health_check()
-    return 0 if success else 1
+    """Main function to run the health check service"""
+    try:
+        # Create logs directory
+        Path("/app/logs").mkdir(parents=True, exist_ok=True)
+        
+        logger.info(f"Starting health check service on port {HEALTH_PORT}")
+        app.run(host='0.0.0.0', port=HEALTH_PORT)
+    except Exception as e:
+        logger.error(f"Failed to start health check service: {e}")
+        return 1
 
 if __name__ == "__main__":
     sys.exit(main())
