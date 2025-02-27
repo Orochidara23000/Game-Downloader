@@ -4,18 +4,21 @@ services:
   steam-downloader:
     build: .
     ports:
-      - "7860:7860"
+      - "8080:8080"
       - "9090:9090"
     volumes:
-      - ./downloads:/app/downloads
-      - ./public:/app/public
+      - steam-data:/data
       - ./logs:/app/logs
     env_file:
       - .env
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:7860/"]
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 30s
       timeout: 30s
       retries: 3
-      start_period: 5s 
+      start_period: 30s
+
+volumes:
+  steam-data:
+    driver: local
