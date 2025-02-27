@@ -19,6 +19,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+import socket
 
 # Load environment variables
 load_dotenv()
@@ -56,6 +57,21 @@ HOST = os.getenv('HOST', '0.0.0.0')
 PUBLIC_URL = os.getenv('PUBLIC_URL', '')
 RAILWAY_STATIC_URL = os.getenv('RAILWAY_STATIC_URL', '')
 VOLUME_PATH = os.getenv('RAILWAY_VOLUME_MOUNT_PATH', '/data')
+
+# Print all environment variables for debugging
+logger.info("=== ENVIRONMENT VARIABLES ===")
+for key, value in os.environ.items():
+    logger.info(f"{key}: {value}")
+logger.info("============================")
+
+# Attempt to get external IP (for debugging)
+try:
+    hostname = socket.gethostname()
+    ip_address = socket.gethostbyname(hostname)
+    logger.info(f"Hostname: {hostname}")
+    logger.info(f"IP Address: {ip_address}")
+except Exception as e:
+    logger.error(f"Could not get IP: {e}")
 
 # Create FastAPI app
 app = FastAPI(
