@@ -12,6 +12,7 @@ import psutil
 import logging
 import json
 import subprocess
+import shutil
 from pathlib import Path
 from datetime import datetime
 from flask import Flask, jsonify
@@ -33,7 +34,12 @@ HEALTH_PORT = int(os.environ.get("HEALTH_PORT", 8081))
 DATA_DIR = Path(os.environ.get("RAILWAY_VOLUME_MOUNT_PATH", "/data"))
 DOWNLOADS_DIR = DATA_DIR / "downloads"
 PUBLIC_DIR = DATA_DIR / "public"
-STEAMCMD_PATH = Path("/app/steamcmd/steamcmd.sh")
+STEAMCMD_PATHS = [
+    os.path.join(os.getcwd(), "steamcmd", "steamcmd.sh"),
+    "/app/steamcmd/steamcmd.sh",
+    "/usr/local/bin/steamcmd",
+    shutil.which("steamcmd")
+]
 
 # Create Flask app
 app = Flask(__name__)
@@ -81,25 +87,41 @@ def check_app_service():
         return {"status": "error", "message": f"Could not connect to application: {str(e)}"}
 
 def check_steamcmd():
-    """Check if SteamCMD is working"""
-    try:
-        if not STEAMCMD_PATH.exists():
-            return {"status": "error", "message": "SteamCMD not found"}
-            
-        result = subprocess.run(
-            [str(STEAMCMD_PATH), "+quit"],
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
-        
-        if result.returncode == 0:
-            return {"status": "ok", "message": "SteamCMD is working"}
+    """Check if SteamCMD is working with detailed path info"""
+    messages = []
+    found_steamcmd = False
+
+    for steamcmd_path in STEAMCMD_PATHS:
+        messages.append(f"Looking for steamcmd at: {steamcmd_path}")
+        if os.path.exists(steamcmd_path):
+            messages.append("steamcmd found.")
+            if os.access(steamcmd_path, os.X_OK):
+                messages.append("steamcmd is executable.")
+                found_steamcmd = True
+                break
+            else:
+                messages.append(f"WARNING: steamcmd is not executable! Permissions: {oct(os.stat(steamcmd_path).st_mode)}")
         else:
-            return {"status": "error", "message": f"SteamCMD returned error: {result.stderr}"}
-    except Exception as e:
-        logger.error(f"Error checking SteamCMD: {e}")
-        return {"status": "error", "message": str(e)}
+            messages.append(f"ERROR: steamcmd not found in {steamcmd_path}")
+            # List directory contents for debugging
+            parent_dir = os.path.dirname(steamcmd_path)
+            if os.path.exists(parent_dir):
+                messages.append(f"Contents of {parent_dir}: {os.listdir(parent_dir)}")
+            else:
+                messages.append(f"Directory {parent_dir} does not exist!")
+
+    if not found_steamcmd:
+        messages.append("ERROR: steamcmd not found in any of the specified locations.")
+
+    return {"status": "ok" if found_steamcmd else "error", "messages": messages}
+
+def check_7z():
+    """Check if 7z is installed and accessible"""
+    results = []
+    for path in ['/usr/bin/7z', '/usr/local/bin/7z', shutil.which("7z")]:
+        if path:
+            results.append(f"Checking {path}: {os.path.exists(path)}")
+    return {"status": "ok", "messages": results}
 
 def check_downloads_dir():
     """Check if downloads directory is accessible"""
@@ -133,6 +155,7 @@ def status():
         "memory": check_memory(),
         "app_service": check_app_service(),
         "steamcmd": check_steamcmd(),
+        "7z": check_7z(),
         "downloads_directory": check_downloads_dir(),
         "timestamp": datetime.now().isoformat()
     }
