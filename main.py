@@ -1,200 +1,184 @@
+#!/usr/bin/env python3
 import os
-import re
 import sys
 import subprocess
-import time
-import threading
 import logging
-import psutil
-import shutil
-from datetime import datetime
-from pathlib import Path
-from typing import Dict, Any, Tuple, Optional
+import time
 import json
-import requests
-from dotenv import load_dotenv
-import gradio as gr
-from prometheus_client import Counter, Gauge, Histogram, start_http_server
-import uvicorn
-from fastapi import FastAPI, HTTPException, BackgroundTasks
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
-import socket
-from flask import Flask, render_template_string, request, jsonify
+from pathlib import Path
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
-# Load environment variables
-load_dotenv()
-
-# Configure logging with more detail
-LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
-LOG_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s'
+# Configure logging
 logging.basicConfig(
-    level=getattr(logging, LOG_LEVEL),
-    format=LOG_FORMAT,
-    handlers=[
-        logging.FileHandler("logs/steam_downloader.log"),
-        logging.StreamHandler(),
-        logging.handlers.RotatingFileHandler(
-            "logs/steam_downloader.log",
-            maxBytes=10485760,  # 10MB
-            backupCount=5
-        )
-    ]
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
 )
-logger = logging.getLogger("SteamDownloader")
+logger = logging.getLogger()
 
-# Enhanced metrics
-DOWNLOAD_COUNTER = Counter('steam_downloads_total', 'Total number of downloads')
-DOWNLOAD_ERRORS = Counter('steam_download_errors_total', 'Total number of download errors')
-ACTIVE_DOWNLOADS = Gauge('steam_active_downloads', 'Number of active downloads')
-DOWNLOAD_SIZE = Histogram('steam_download_size_bytes', 'Download size in bytes')
-DOWNLOAD_TIME = Histogram('steam_download_duration_seconds', 'Download duration in seconds')
-DISK_USAGE = Gauge('steam_disk_usage_bytes', 'Disk usage in bytes')
-MEMORY_USAGE = Gauge('steam_memory_usage_bytes', 'Memory usage in bytes')
+# Get configuration
+PORT = int(os.environ.get('PORT', 8080))
 
-# Railway configuration
-PORT = int(os.getenv('PORT', '8080'))
-HOST = os.getenv('HOST', '0.0.0.0')
-PUBLIC_URL = os.getenv('PUBLIC_URL', '')
-RAILWAY_STATIC_URL = os.getenv('RAILWAY_STATIC_URL', '')
-VOLUME_PATH = os.getenv('RAILWAY_VOLUME_MOUNT_PATH', '/data')
+# Install dependencies
+def install_dependencies():
+    """Install required Python packages"""
+    logger.info("Checking and installing dependencies...")
+    try:
+        # Define required packages
+        required_packages = ['flask']
+        
+        # Install packages using pip
+        subprocess.check_call([
+            sys.executable, "-m", "pip", "install", "--upgrade", "pip"
+        ])
+        
+        for package in required_packages:
+            logger.info(f"Installing {package}...")
+            subprocess.check_call([
+                sys.executable, "-m", "pip", "install", package
+            ])
+        
+        logger.info("All dependencies installed successfully")
+        return True
+    except Exception as e:
+        logger.error(f"Error installing dependencies: {e}")
+        return False
 
-# Print all environment variables for debugging
-logger.info("=== ENVIRONMENT VARIABLES ===")
-for key, value in os.environ.items():
-    logger.info(f"{key}: {value}")
-logger.info("============================")
+# Simple HTTP request handler
+class SimpleHTTPHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == '/':
+            self.send_response(200)
+            self.send_header('Content-type', 'text/html')
+            self.end_headers()
+            self.wfile.write(HTML_CONTENT.encode())
+        elif self.path == '/health':
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({"status": "healthy"}).encode())
+        elif self.path == '/debug':
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            
+            # Collect debug information
+            debug_info = {
+                "environment": {k: v for k, v in os.environ.items()},
+                "working_directory": os.getcwd(),
+                "files": [str(f) for f in Path('.').glob('*')]
+            }
+            
+            self.wfile.write(json.dumps(debug_info, indent=2).encode())
+        else:
+            self.send_response(404)
+            self.send_header('Content-type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(b'Not Found')
+    
+    def log_message(self, format, *args):
+        """Override to use our logger"""
+        logger.info("%s - %s" % (self.address_string(), format % args))
 
-# Attempt to get external IP (for debugging)
-try:
-    hostname = socket.gethostname()
-    ip_address = socket.gethostbyname(hostname)
-    logger.info(f"Hostname: {hostname}")
-    logger.info(f"IP Address: {ip_address}")
-except Exception as e:
-    logger.error(f"Could not get IP: {e}")
-
-# Create Flask app
-app = Flask(__name__)
-
-# HTML template for our simple interface
-HTML_TEMPLATE = """
+# Simple HTML content
+HTML_CONTENT = """
 <!DOCTYPE html>
 <html>
 <head>
     <title>Steam Game Downloader</title>
     <style>
-        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; max-width: 800px; margin: 0 auto; }
+        body { font-family: Arial, sans-serif; margin: 20px; }
         h1 { color: #333; }
         .container { background: #f5f5f5; padding: 20px; border-radius: 5px; margin-top: 20px; }
-        input, button { padding: 10px; margin: 10px 0; }
-        button { background: #4CAF50; color: white; border: none; cursor: pointer; }
-        button:hover { background: #45a049; }
-        #result { margin-top: 20px; padding: 10px; background: #e9e9e9; border-radius: 5px; display: none; }
     </style>
 </head>
 <body>
     <h1>Steam Game Downloader</h1>
-    
     <div class="container">
-        <h2>Download a Steam Game</h2>
-        <p>Enter the Steam App ID to download.</p>
-        
-        <div>
-            <input type="text" id="appId" placeholder="Enter Steam App ID">
-            <button onclick="downloadGame()">Download Game</button>
-        </div>
-        
-        <div id="result"></div>
+        <p>This is a simple Steam Game Downloader service.</p>
+        <p>Check the <a href="/debug">debug information</a> for environment details.</p>
+        <p>Use the <a href="/health">health check</a> to verify the service is running.</p>
     </div>
-
-    <script>
-        function downloadGame() {
-            const appId = document.getElementById('appId').value;
-            if (!appId) {
-                alert('Please enter a valid App ID');
-                return;
-            }
-            
-            fetch('/api/download', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({app_id: appId}),
-            })
-            .then(response => response.json())
-            .then(data => {
-                const resultDiv = document.getElementById('result');
-                resultDiv.textContent = data.message;
-                resultDiv.style.display = 'block';
-            })
-            .catch(error => {
-                console.error('Error:', error);
-                alert('An error occurred. Please try again.');
-            });
-        }
-    </script>
 </body>
 </html>
 """
 
-@app.route('/')
-def index():
-    """Serve the main page"""
-    return render_template_string(HTML_TEMPLATE)
-
-@app.route('/health')
-def health():
-    """Health check endpoint"""
-    return jsonify({"status": "healthy"})
-
-@app.route('/api/download', methods=['POST'])
-def download():
-    """API endpoint to start a download"""
-    data = request.json
-    app_id = data.get('app_id')
-    
-    if not app_id:
-        return jsonify({"success": False, "message": "Please provide an App ID"})
-    
-    logger.info(f"Download requested for App ID: {app_id}")
-    
-    # In a real implementation, we would start the download here
-    return jsonify({
-        "success": True, 
-        "message": f"Download started for App ID: {app_id}"
-    })
-
-@app.route('/debug')
-def debug():
-    """Debug information endpoint"""
-    env_vars = {k: v for k, v in os.environ.items() if k.startswith(('PORT', 'HOST', 'PUBLIC', 'RAILWAY'))}
+def run_simple_server():
+    """Run a simple HTTP server without dependencies"""
+    logger.info(f"Starting simple HTTP server on port {PORT}")
+    server = HTTPServer(('0.0.0.0', PORT), SimpleHTTPHandler)
     
     try:
-        # Get disk space
-        disk = subprocess.check_output("df -h", shell=True).decode('utf-8')
-    except:
-        disk = "Could not get disk information"
-    
-    try:
-        # Get network information
-        network = subprocess.check_output("ifconfig || ip addr", shell=True).decode('utf-8')
-    except:
-        network = "Could not get network information"
-    
-    return jsonify({
-        "environment": env_vars,
-        "disk": disk,
-        "network": network
-    })
+        logger.info(f"Server started at http://0.0.0.0:{PORT}")
+        server.serve_forever()
+    except KeyboardInterrupt:
+        logger.info("Server stopped by user")
+    except Exception as e:
+        logger.error(f"Server error: {e}")
+    finally:
+        server.server_close()
 
-if __name__ == '__main__':
-    # Log important information
-    logger.info(f"Starting Flask server on port {PORT}")
-    logger.info(f"Access the web interface at the Railway-provided URL")
-    logger.info(f"Health check available at /health")
-    logger.info(f"Debug information available at /debug")
+def run_flask_server():
+    """Run Flask server if dependencies are installed"""
+    try:
+        # Try to import Flask
+        from flask import Flask, render_template_string, jsonify
+        
+        app = Flask(__name__)
+        
+        @app.route('/')
+        def index():
+            return render_template_string(HTML_CONTENT)
+        
+        @app.route('/health')
+        def health():
+            return jsonify({"status": "healthy"})
+        
+        @app.route('/debug')
+        def debug():
+            debug_info = {
+                "environment": {k: v for k, v in os.environ.items()},
+                "working_directory": os.getcwd(),
+                "files": [str(f) for f in Path('.').glob('*')]
+            }
+            return jsonify(debug_info)
+        
+        logger.info(f"Starting Flask server on port {PORT}")
+        app.run(host='0.0.0.0', port=PORT)
+        return True
+    except ImportError:
+        logger.warning("Flask not available, falling back to simple server")
+        return False
+    except Exception as e:
+        logger.error(f"Error running Flask server: {e}")
+        return False
+
+def main():
+    """Main application entry point"""
+    logger.info("Starting Steam Downloader application")
     
-    # Start the Flask server
-    app.run(host='0.0.0.0', port=PORT)
+    # Log environment info
+    logger.info("=== ENVIRONMENT ===")
+    for key, value in os.environ.items():
+        if key.startswith(('PORT', 'PUBLIC', 'RAILWAY', 'HOST')):
+            logger.info(f"{key}: {value}")
+    logger.info("==================")
+    
+    # Show file system info
+    logger.info("=== FILES ===")
+    for item in Path('.').glob('*'):
+        logger.info(f"{item} {'(dir)' if item.is_dir() else '(file)'}")
+    logger.info("============")
+    
+    # Try to install dependencies
+    deps_installed = install_dependencies()
+    
+    # Try to run Flask server
+    if deps_installed and run_flask_server():
+        logger.info("Successfully started Flask server")
+    else:
+        # Fall back to simple server
+        logger.info("Falling back to simple HTTP server")
+        run_simple_server()
+
+if __name__ == "__main__":
+    main()
