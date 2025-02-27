@@ -52,6 +52,7 @@ MEMORY_USAGE = Gauge('steam_memory_usage_bytes', 'Memory usage in bytes')
 
 # Railway configuration
 PORT = int(os.getenv('PORT', '8080'))
+HOST = os.getenv('HOST', '0.0.0.0')
 PUBLIC_URL = os.getenv('PUBLIC_URL', '')
 RAILWAY_STATIC_URL = os.getenv('RAILWAY_STATIC_URL', '')
 VOLUME_PATH = os.getenv('RAILWAY_VOLUME_MOUNT_PATH', '/data')
@@ -627,57 +628,21 @@ class SteamDownloader:
                 return None, f"Error stopping download: {str(e)}"
         return "No active download to stop", None
 
-def create_gradio_interface():
-    """Create Gradio web interface"""
-    # Configure Gradio settings to show the URL
-    public_url = os.getenv('PUBLIC_URL', '')
-    railway_url = os.getenv('RAILWAY_STATIC_URL', '')
-    
-    # Log URLs for debugging
-    logger.info(f"Creating Gradio interface with public URL: {public_url}")
-    logger.info(f"Railway static URL: {railway_url}")
-    
-    # Create the interface
-    with gr.Blocks(title="Steam Game Downloader", analytics_enabled=False) as interface:
+def create_interface():
+    with gr.Blocks(title="Steam Game Downloader") as interface:
         gr.Markdown("# Steam Game Downloader")
-        gr.Markdown("Enter the Steam App ID to download games")
+        gr.Markdown("Simple interface for downloading Steam games.")
         
-        with gr.Row():
-            with gr.Column():
-                app_id = gr.Textbox(label="App ID", placeholder="Enter Steam App ID")
-                download_btn = gr.Button("Download Game")
-                status_text = gr.Markdown("Ready to download")
-            
-            with gr.Column():
-                download_info = gr.JSON(label="Download Status")
-                refresh_btn = gr.Button("Refresh Status")
+        app_id = gr.Textbox(label="App ID", placeholder="Enter Steam App ID")
+        download_btn = gr.Button("Download Game")
+        result = gr.Textbox(label="Result")
         
-        def start_download(game_id):
-            if not game_id:
+        def on_download(app_id):
+            if not app_id:
                 return "Please enter an App ID"
-            
-            # Start a simple anonymous download
-            try:
-                # Log the download attempt
-                logger.info(f"Attempting to download app ID: {game_id}")
-                
-                # Return success message for now
-                return f"Download started for App ID {game_id}"
-            except Exception as e:
-                logger.error(f"Error starting download: {str(e)}")
-                return f"Error: {str(e)}"
+            return f"Started download for App ID: {app_id}"
         
-        def get_status():
-            # Simple status for now
-            return {"status": "ready"}
-        
-        download_btn.click(
-            start_download,
-            inputs=[app_id],
-            outputs=status_text
-        )
-        
-        refresh_btn.click(get_status, outputs=download_info)
+        download_btn.click(on_download, inputs=app_id, outputs=result)
     
     return interface
 
@@ -760,7 +725,7 @@ def main():
         
         # Create Gradio interface with explicit sharing settings
         logger.info("Creating Gradio interface...")
-        gradio_app = create_gradio_interface()
+        gradio_interface = create_interface()
         
         # Log startup information
         port = int(os.getenv('PORT', '8080'))
@@ -777,7 +742,7 @@ def main():
             return {"message": "API Root - Gradio interface is available at /"}
         
         # Mount Gradio app to FastAPI
-        final_app = gr.mount_gradio_app(api, gradio_app, path="/")
+        final_app = gr.mount_gradio_app(api, gradio_interface, path="/")
         
         # Start the server with explicit host binding
         uvicorn.run(
